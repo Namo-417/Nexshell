@@ -96,7 +96,7 @@ Execution diagnostics are written once through the relevant stderr stream. Exter
 
 Ctrl+C cancels the active foreground pipeline and the next prompt appears after cleanup. At an idle prompt it keeps the session alive. Windows children start suspended, join a kill-on-close Job Object, and resume only after tracking is established. Cancellation and partial startup failures terminate tracked children; closing the job also removes descendants that outlive their direct command. A host that disallows nested job assignment produces a clear startup error rather than running an untracked child.
 
-On Linux, macOS, and BSD, external stages share a process group with foreground terminal handoff and restoration. Cancellation kills that group; descendants that deliberately create another group or session can escape it. Linux runtime behavior is verified in Ubuntu 24.04 on WSL2, including real terminal input, Ctrl+C, foreground restoration, and descendant cleanup. Windows and Linux race tests pass. macOS/BSD runtime behavior remains unverified; macOS cross-compilation passes and native CI is prepared. AIX/Solaris terminal input is explicitly unsupported; their nonterminal process-group path is unverified. Other operating systems report unsupported process management. See [architecture and verification notes](docs/design.md) for the precise platform behavior and recorded results. Full job control, background jobs, `fg`, and `bg` are outside Phase 2.
+On Linux and BSD, external stages share a process group with foreground terminal handoff and restoration. Cancellation kills that group; descendants that deliberately create another group or session can escape it. Linux runtime behavior is verified in Ubuntu 24.04 on WSL2, including real terminal input, Ctrl+C, foreground restoration, and descendant cleanup. Windows and Linux race tests pass. BSD runtime behavior remains unverified. AIX/Solaris terminal input is explicitly unsupported; their nonterminal process-group path is unverified. Other operating systems report unsupported process management. See [architecture and verification notes](docs/design.md) for the precise platform behavior and recorded results. Full job control, background jobs, `fg`, and `bg` are outside Phase 2.
 
 The stream API accepts custom readers/writers. Such implementations and custom built-ins must cooperate with cancellation and unblock pending I/O; Go cannot safely force an arbitrary user-supplied `Read`, `Write`, or command function to return. The engine never closes the shell's inherited standard streams.
 
@@ -127,7 +127,7 @@ go build -o /tmp/nexshell ./cmd/nexshell
 python3 scripts/verify-unix-terminal.py /tmp/nexshell
 ```
 
-The native CI matrix in `.github/workflows/verify.yml` runs uncached race tests, builds, and vet on Windows, Linux, and macOS, plus the Unix terminal smoke test on Linux/macOS. The workflow is prepared locally; no branch was pushed and no hosted CI run is claimed.
+The native CI matrix in `.github/workflows/verify.yml` runs uncached race tests, builds, and vet on Windows and Linux, plus the Unix terminal smoke test on Linux.
 
 ## Repository structure
 

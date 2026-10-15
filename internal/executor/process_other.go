@@ -1,4 +1,4 @@
-//go:build !windows && !darwin && !dragonfly && !freebsd && !linux && !netbsd && !openbsd && !solaris && !aix
+//go:build !windows && !dragonfly && !freebsd && !linux && !netbsd && !openbsd && !solaris && !aix
 
 package executor
 

@@ -1,4 +1,4 @@
-//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris || aix
+//go:build dragonfly || freebsd || linux || netbsd || openbsd || solaris || aix
 
 package executor
 

@@ -65,7 +65,7 @@ Aliases expand once per original stage. An alias value can itself contain a pipe
 
 Shared execution logic uses `os/exec`, `os.Pipe`, and context cancellation. OS-specific tracking is isolated in process files. Windows starts each child suspended, assigns it to a kill-on-close Job Object, then resumes its initial thread. This prevents a spawn-before-assignment race. Assignment/resume failure kills the suspended child and waits for it. Cancellation terminates the job, and closing it removes descendants that survived direct parent completion. Windows 8+ nested-job support is required; a restrictive host job can cause a reported startup error.
 
-Linux, macOS, and BSD use one process group for all external stages. The first child hands the original shell input terminal to the group before exec; cleanup restores its previous foreground group with SIGTTOU temporarily ignored. Direct children are not reaped until startup completes, retaining a fast-exiting group leader while subsequent stages join. A child terminated by SIGINT cancels the execution context, closes owned streams, and kills the remainder of the group. Descendants that deliberately detach into another process group/session can escape this Unix mechanism. AIX/Solaris reject inherited terminal input explicitly; their file/pipe path remains unverified. Other OS targets report unsupported foreground process management. Linux runtime tests now pass under Ubuntu 24.04 on WSL2, including real pseudo-terminal input, terminal Ctrl+C, foreground restoration and descendant cleanup. macOS/BSD runtime behavior remains unverified; macOS cross-compilation passes and hosted CI is prepared locally. Full background job control, `fg`, and `bg` are intentionally deferred.
+Linux and BSD use one process group for all external stages. The first child hands the original shell input terminal to the group before exec; cleanup restores its previous foreground group with SIGTTOU temporarily ignored. Direct children are not reaped until startup completes, retaining a fast-exiting group leader while subsequent stages join. A child terminated by SIGINT cancels the execution context, closes owned streams, and kills the remainder of the group. Descendants that deliberately detach into another process group/session can escape this Unix mechanism. AIX/Solaris reject inherited terminal input explicitly; their file/pipe path remains unverified. Other OS targets report unsupported foreground process management. Linux runtime tests now pass under Ubuntu 24.04 on WSL2, including real pseudo-terminal input, terminal Ctrl+C, foreground restoration and descendant cleanup. BSD runtime behavior remains unverified. Full background job control, `fg`, and `bg` are intentionally deferred.
 
 Arbitrary custom readers/writers and third-party built-ins must cooperate with cancellation. Go cannot forcibly stop an arbitrary blocked interface method without closing caller-owned resources or leaking a goroutine; the executor does neither. Engine-owned pipe handles are closed on interruption. Native standard streams remain owned by the shell. Tests supply finite readers or explicit readiness/cancellation handshakes.
 
@@ -96,7 +96,7 @@ No source or test files were removed; `go.mod` and `nex.yaml` remain unchanged. 
 
 Parser tests are table-driven and include quote groups, Unicode, empty arguments, escaping, Windows paths, every operator, invalid combinations, missing operands, direct AST validation, token spans and fuzz seeds. Executor tests use portable Go subprocess fixtures with explicit timeouts; no dependency on `grep`, Unix `sort`, or other platform tools is required. Built-in regressions capture actual output and errors; existing tests are retained, with temporary home/directory setup corrected. REPL tests cover parser recovery, aliases, long lines, unbuffered subprocess input, redirected pipelines, exit/history behavior, injected Ctrl+C cancellation, idle interrupts, and simulated Windows ReadConsole-aborted error recovery. A physical interactive console Ctrl+C event was not synthesized.
 
-Runtime verification is performed on Windows amd64 and the existing Ubuntu 24.04 WSL2 environment. Initial WSL queries and compiler invocation failed inside the execution sandbox; approved execution outside that sandbox found the existing distro. A project-local verified 64-bit compiler resolved Windows race testing, and isolated Linux Go/GCC toolchains enabled native Linux tests and race detection without installing distro packages globally. Cross-compilation and unrun macOS CI remain distinguished from executed native tests.
+Runtime verification is performed on Windows amd64 and the existing Ubuntu 24.04 WSL2 environment. Initial WSL queries and compiler invocation failed inside the execution sandbox; approved execution outside that sandbox found the existing distro. A project-local verified 64-bit compiler resolved Windows race testing, and isolated Linux Go/GCC toolchains enabled native Linux tests and race detection without installing distro packages globally. Cross-compilation remains distinguished from executed native tests.
 
 ## Final verification results
 
@@ -115,8 +115,7 @@ Verified native platforms: Windows amd64 and Ubuntu 24.04 WSL2 Linux amd64, Go 1
 | Native Linux terminal tests | Passed: new `TestLinuxForegroundTerminal` subtests for read/EOF and terminal-generated Ctrl+C, plus the actual REPL smoke driver. Foreground restoration and descendant cleanup asserted. |
 | Native Linux build/vet | Passed with isolated Go 1.26.4. |
 | Linux amd64 full cross-build | Passed, exit 0 with `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./...` |
-| macOS amd64 full cross-build | Passed, exit 0 with `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build ./...` |
-| Linux/macOS executor test cross-compilation | Passed, exit 0 using `go test -c -o <temporary-test-binary> ./internal/executor` under the corresponding GOOS/GOARCH/CGO_ENABLED settings; included Unix SIGINT tests; temporary binaries removed |
+| Linux executor test cross-compilation | Passed, exit 0 using `go test -c -o <temporary-test-binary> ./internal/executor` under the corresponding GOOS/GOARCH/CGO_ENABLED settings; included Unix SIGINT tests; temporary binary removed |
 | Windows binary smoke | Passed, exit 0: overwrite/append, `<`, built-in pipeline, `2>`, error recovery, clean exit and isolated history |
 | `gofmt -l .` and `git diff --check` | Passed |
 
@@ -126,8 +125,6 @@ The cross-build environment was set in child PowerShell sessions as follows (no 
 $env:CGO_ENABLED = '0'
 $env:GOARCH = 'amd64'
 $env:GOOS = 'linux'
-go build ./...
-$env:GOOS = 'darwin'
 go build ./...
 ```
 
@@ -144,7 +141,7 @@ exit 0
 
 Assertions verified exact copied contents, the redirected missing-file diagnostic, empty inherited stderr, recovery output, and exit status 0. Automated subprocess fixtures also verify successful external execution, silent/non-silent nonzero exits, PATH/environment/CWD inheritance, two/three-stage pipelines, 2 MiB draining, partial startup failure, missing input, overwrite/append/create, per-stage stderr, rightmost-nonzero status, process-tree cleanup, and mixed built-in/external cancellation. The original cd failures are resolved with correct cleanup and temporary-home setup; no original test was deleted or weakened.
 
-Remaining verification scope: native macOS/BSD tests have not run. Linux terminal handoff and terminal-generated Ctrl+C are now verified using a real PTY. Physical Windows console Ctrl+C was not synthesized; signal delivery is injected in REPL tests, console-read aborts are simulated, and native process cancellation/descendant cleanup is tested through contexts. No known failing Windows/Linux native unit, integration or race test remains. All changes remain local as requested; no branch, PR, or hosted CI run was published.
+Remaining verification scope: native BSD tests have not run. Linux terminal handoff and terminal-generated Ctrl+C are now verified using a real PTY. Physical Windows console Ctrl+C was not synthesized; signal delivery is injected in REPL tests, console-read aborts are simulated, and native process cancellation/descendant cleanup is tested through contexts. No known failing Windows/Linux native unit, integration or race test remains. All changes remain local as requested; no branch, PR, or hosted CI run was published.
 
 ## Reproducing the verification setup
 
@@ -178,9 +175,9 @@ go build -o /tmp/nexshell ./cmd/nexshell
 python3 scripts/verify-unix-terminal.py /tmp/nexshell
 ```
 
-The driver uses Python 3.9+ standard-library POSIX PTY APIs and `/bin/cat`/`/bin/sleep`, isolates HOME, verifies stdin/EOF, foreground pipeline Ctrl+C cleanup, restored prompt/terminal ownership, idle Ctrl+C and clean exit, and reaps processes on failure. It passed on Linux. It is prepared for macOS but has not been run there.
+The driver uses Python 3.9+ standard-library POSIX PTY APIs and `/bin/cat`/`/bin/sleep`, isolates HOME, verifies stdin/EOF, foreground pipeline Ctrl+C cleanup, restored prompt/terminal ownership, idle Ctrl+C and clean exit, and reaps processes on failure. It passed on Linux.
 
-`.github/workflows/verify.yml` provides native Windows/Linux/macOS jobs using Go from `go.mod`, uncached race tests with a five-minute timeout, build, vet, and the Unix terminal driver on Linux/macOS. Windows selects and validates the runner's x64 MinGW compiler. The workflow and helper scripts are local changes; the user requested that nothing be pushed, so no macOS hosted test result is claimed.
+`.github/workflows/verify.yml` provides native Windows/Linux jobs using Go from `go.mod`, uncached race tests with a five-minute timeout, build, vet, and the Unix terminal driver on Linux. Windows selects and validates the runner's x64 MinGW compiler.
 
 Additional files for this verification follow-up: `.gitignore`, `.github/workflows/verify.yml`, `scripts/install-race-toolchain.ps1`, `scripts/test-race.ps1`, `scripts/verify-unix-terminal.py`, and `internal/executor/process_terminal_linux_test.go`. Production Go code did not require changes after the new native/race tests.
 
