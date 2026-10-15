@@ -4,7 +4,10 @@
 package registry
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strings"
 )
@@ -12,6 +15,13 @@ import (
 // Context is passed to every command at run time. It provides access to
 // shared shell state so built-ins can mutate cwd, aliases and history.
 type Context struct {
+	// Context carries cancellation for the foreground command.
+	Context context.Context
+	// Streams are supplied by the execution engine for pipes and redirections.
+	// Nil streams retain the original process standard streams.
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
 	// CWD is a pointer to the current working directory string held in the REPL.
 	CWD *string
 	// Aliases is the live alias store.
@@ -20,6 +30,52 @@ type Context struct {
 	History HistoryStore
 	// Registry lets help and other meta-commands enumerate all commands.
 	Registry *Registry
+}
+
+// Input returns the command's standard input, falling back to os.Stdin.
+func (c Context) Input() io.Reader {
+	if c.Stdin != nil {
+		return c.Stdin
+	}
+	return os.Stdin
+}
+
+// Output returns the command's standard output, falling back to os.Stdout.
+func (c Context) Output() io.Writer {
+	if c.Stdout != nil {
+		return c.Stdout
+	}
+	return os.Stdout
+}
+
+// ErrorOutput returns the command's standard error, falling back to os.Stderr.
+func (c Context) ErrorOutput() io.Writer {
+	if c.Stderr != nil {
+		return c.Stderr
+	}
+	return os.Stderr
+}
+
+// Cancellation returns a non-nil context for commands that support cancellation.
+func (c Context) Cancellation() context.Context {
+	if c.Context != nil {
+		return c.Context
+	}
+	return context.Background()
+}
+
+// ExitError requests a clean shell exit. The REPL, rather than a built-in,
+// owns history saving and termination so execution resources can be released.
+type ExitError struct {
+	Code int
+}
+
+func (e *ExitError) Error() string { return fmt.Sprintf("shell exit requested (%d)", e.Code) }
+
+// PipelineCommand optionally declares that a command can run concurrently in a
+// pipeline without changing parent shell state. Undeclared commands are unsafe.
+type PipelineCommand interface {
+	PipelineSafe() bool
 }
 
 // AliasStore is a minimal interface so the registry package does not import alias.

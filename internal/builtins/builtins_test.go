@@ -1,6 +1,10 @@
 package builtins_test
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +28,8 @@ func buildContext(t *testing.T) (registry.Context, *string) {
 		t.Fatal(err)
 	}
 	ctx := registry.Context{
+		Stdout:   io.Discard,
+		Stderr:   io.Discard,
 		CWD:      &cwd,
 		Aliases:  a,
 		History:  h,
@@ -46,6 +52,15 @@ func runBuiltin(t *testing.T, ctx registry.Context, name string, args []string) 
 func TestCd_ValidDir(t *testing.T) {
 	ctx, cwd := buildContext(t)
 	tmpDir := t.TempDir()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(orig); err != nil {
+			t.Error(err)
+		}
+	})
 
 	if err := runBuiltin(t, ctx, "cd", []string{tmpDir}); err != nil {
 		t.Fatalf("cd failed: %v", err)
@@ -53,23 +68,22 @@ func TestCd_ValidDir(t *testing.T) {
 	if *cwd != tmpDir {
 		t.Fatalf("cwd = %q want %q", *cwd, tmpDir)
 	}
-	orig, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(orig) })
 }
 
 func TestCd_NoArgs_GoesToHome(t *testing.T) {
 	ctx, cwd := buildContext(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
-	home, _ := os.UserHomeDir()
 	if err := runBuiltin(t, ctx, "cd", nil); err != nil {
 		t.Fatalf("cd (no args) failed: %v", err)
 	}
-	if *cwd == "" {
-		t.Fatal("cwd is empty after cd ~")
+	if *cwd != home {
+		t.Fatalf("cwd = %q want temporary home %q", *cwd, home)
 	}
-	_ = home
 }
 
 func TestCd_InvalidDir_Errors(t *testing.T) {
@@ -221,5 +235,228 @@ func TestRegisterAll_AllCommandsPresent(t *testing.T) {
 		if _, ok := reg.Lookup(name); !ok {
 			t.Errorf("expected built-in %q to be registered", name)
 		}
+	}
+}
+
+func TestBuiltins_UseOutputStream(t *testing.T) {
+	t.Setenv("NEXSHELL_BUILTIN_TEST", "streamed")
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"pwd", nil, "working-directory"},
+		{"echo", []string{"hello", "world"}, "hello world\n"},
+		{"echo", nil, "\n"},
+		{"clear", nil, "\033[H\033[2J"},
+		{"help", nil, "Available Commands"},
+		{"help", []string{"cat"}, "cat"},
+		{"env", []string{"NEXSHELL_BUILTIN_TEST"}, "NEXSHELL_BUILTIN_TEST=streamed\n"},
+		{"env", nil, "NEXSHELL_BUILTIN_TEST=streamed\n"},
+		{"history", nil, "(no history)\n"},
+		{"alias", nil, "(no aliases)\n"},
+		{"alias", []string{"ll=ls"}, "='ls'\n"},
+	} {
+		t.Run(tt.name+strings.Join(tt.args, "_"), func(t *testing.T) {
+			ctx, cwd := buildContext(t)
+			*cwd = "working-directory"
+			var out bytes.Buffer
+			ctx.Stdout = &out
+			if err := runBuiltin(t, ctx, tt.name, tt.args); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), tt.want) {
+				t.Fatalf("output %q does not contain %q", out.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestCat_ExplicitInput(t *testing.T) {
+	ctx, _ := buildContext(t)
+	ctx.Stdin = strings.NewReader("first\nsecond\n")
+	var out bytes.Buffer
+	ctx.Stdout = &out
+	if err := runBuiltin(t, ctx, "cat", nil); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "first\nsecond\n" {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestCat_MissingFilesReturnErrorAndContinue(t *testing.T) {
+	ctx, cwd := buildContext(t)
+	*cwd = t.TempDir()
+	if err := os.WriteFile(filepath.Join(*cwd, "present.txt"), []byte("present"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, diagnostics bytes.Buffer
+	ctx.Stdout, ctx.Stderr = &out, &diagnostics
+	err := runBuiltin(t, ctx, "cat", []string{"missing.txt", "present.txt", "also-missing.txt"})
+	if err == nil || !strings.Contains(err.Error(), "missing.txt") || !strings.Contains(err.Error(), "also-missing.txt") {
+		t.Fatalf("expected missing-file diagnostics, got %v", err)
+	}
+	if out.String() != "present" {
+		t.Fatalf("output = %q", out.String())
+	}
+	if diagnostics.Len() != 0 {
+		t.Fatalf("builtin printed diagnostics that the executor must own: %q", diagnostics.String())
+	}
+	// The file must no longer be held open when the command returns on Windows.
+	if err := os.Remove(filepath.Join(*cwd, "present.txt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCat_CanceledInput(t *testing.T) {
+	ctx, _ := buildContext(t)
+	commandContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctx.Context = commandContext
+	ctx.Stdin = strings.NewReader("should not be copied")
+	var out bytes.Buffer
+	ctx.Stdout = &out
+	if err := runBuiltin(t, ctx, "cat", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation, got %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("canceled copy wrote %q", out.String())
+	}
+}
+
+func TestCat_RejectsNonRegularOperand(t *testing.T) {
+	ctx, _ := buildContext(t)
+	var out bytes.Buffer
+	ctx.Stdout = &out
+	err := runBuiltin(t, ctx, "cat", []string{t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "only regular files are supported") {
+		t.Fatalf("expected a nonregular-file error, got %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("nonregular operand wrote %q", out.String())
+	}
+}
+
+func TestLs_UsesContextDirectoryAndOutput(t *testing.T) {
+	ctx, cwd := buildContext(t)
+	*cwd = t.TempDir()
+	if err := os.Mkdir(filepath.Join(*cwd, "nested"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(*cwd, "nested", "only-here.txt"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	ctx.Stdout = &out
+	if err := runBuiltin(t, ctx, "ls", []string{"nested"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "only-here.txt") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestAlias_PreservesExecutableQuotes(t *testing.T) {
+	ctx, _ := buildContext(t)
+	value := `"C:\Program Files\app.exe" --flag`
+	if err := runBuiltin(t, ctx, "alias", []string{"app=" + value}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := ctx.Aliases.Get("app"); got != value {
+		t.Fatalf("alias value = %q want %q", got, value)
+	}
+}
+
+func TestHistory_PrintsEntries(t *testing.T) {
+	ctx, _ := buildContext(t)
+	ctx.History.Add("echo first")
+	ctx.History.Add("echo second")
+	var out bytes.Buffer
+	ctx.Stdout = &out
+	if err := runBuiltin(t, ctx, "history", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "1  echo first\n") || !strings.Contains(out.String(), "2  echo second\n") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestEnv_EmptyValueAndMissingVariable(t *testing.T) {
+	ctx, _ := buildContext(t)
+	t.Setenv("NEXSHELL_EMPTY_TEST", "")
+	var out bytes.Buffer
+	ctx.Stdout = &out
+	if err := runBuiltin(t, ctx, "env", []string{"NEXSHELL_EMPTY_TEST"}); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "NEXSHELL_EMPTY_TEST=\n" {
+		t.Fatalf("output = %q", out.String())
+	}
+	key := "NEXSHELL_UNSET_BUILTIN_TEST_76DC"
+	previous, existed := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
+	if existed {
+		t.Cleanup(func() { _ = os.Setenv(key, previous) })
+	}
+	if err := runBuiltin(t, ctx, "env", []string{key}); err == nil {
+		t.Fatal("expected missing environment variable error")
+	}
+}
+
+func TestExit_ReturnsControlSignal(t *testing.T) {
+	for _, tt := range []struct {
+		args []string
+		code int
+	}{
+		{nil, 0},
+		{[]string{"7"}, 7},
+		{[]string{"255"}, 255},
+	} {
+		ctx, _ := buildContext(t)
+		err := runBuiltin(t, ctx, "exit", tt.args)
+		var exit *registry.ExitError
+		if !errors.As(err, &exit) || exit.Code != tt.code {
+			t.Fatalf("exit %v returned %v, want code %d", tt.args, err, tt.code)
+		}
+	}
+	for _, args := range [][]string{{"bad"}, {"-1"}, {"256"}, {"0", "1"}} {
+		ctx, _ := buildContext(t)
+		err := runBuiltin(t, ctx, "exit", args)
+		var exit *registry.ExitError
+		if err == nil || errors.As(err, &exit) {
+			t.Fatalf("invalid exit %v returned %v", args, err)
+		}
+	}
+}
+
+func TestBuiltins_PipelineSafety(t *testing.T) {
+	ctx, _ := buildContext(t)
+	unsafe := map[string]bool{"cd": true, "exit": true, "alias": true, "unalias": true}
+	for _, cmd := range ctx.Registry.All() {
+		capability, ok := cmd.(registry.PipelineCommand)
+		if !ok || capability.PipelineSafe() == unsafe[cmd.Name()] {
+			t.Errorf("command %q pipeline safety incorrect", cmd.Name())
+		}
+	}
+}
+
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestBuiltins_PropagateOutputFailures(t *testing.T) {
+	want := errors.New("closed output")
+	for _, name := range []string{"pwd", "echo", "clear", "help", "env", "history", "alias", "ls", "cat"} {
+		t.Run(name, func(t *testing.T) {
+			ctx, _ := buildContext(t)
+			ctx.Stdout = failingWriter{want}
+			ctx.Stdin = strings.NewReader("input")
+			if err := runBuiltin(t, ctx, name, nil); !errors.Is(err, want) {
+				t.Fatalf("expected output error, got %v", err)
+			}
+		})
 	}
 }

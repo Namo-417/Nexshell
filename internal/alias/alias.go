@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Store holds name → value alias mappings.
@@ -49,16 +50,16 @@ func (s *Store) All() map[string]string {
 // returns the alias value followed by the remaining input tokens.
 // If no alias matches, it returns input unchanged.
 func (s *Store) Expand(input string) string {
-	input = strings.TrimSpace(input)
+	input = strings.TrimLeftFunc(input, unicode.IsSpace)
 	if input == "" {
 		return input
 	}
-	parts := strings.Fields(input)
-	if val, ok := s.Get(parts[0]); ok {
-		if len(parts) > 1 {
-			return val + " " + strings.Join(parts[1:], " ")
-		}
-		return val
+	end := strings.IndexFunc(input, unicode.IsSpace)
+	if end < 0 {
+		end = len(input)
+	}
+	if val, ok := s.Get(input[:end]); ok {
+		return val + input[end:]
 	}
 	return input
 }

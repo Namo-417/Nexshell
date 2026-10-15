@@ -1,8 +1,10 @@
 package history_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"nexshell/internal/history"
@@ -102,5 +104,34 @@ func TestLoad_Skips_BlankLines(t *testing.T) {
 	}
 	if s.Len() != 2 {
 		t.Fatalf("expected 2 entries, got %d", s.Len())
+	}
+}
+
+func TestHistoryLimitAndLongEntries(t *testing.T) {
+	path := tempPath(t)
+	s := history.NewWithPath(path)
+	for i := 0; i < 1200; i++ {
+		s.Add(fmt.Sprintf("command-%d", i))
+	}
+	if s.Len() != 1000 || s.List()[0] != "command-200" {
+		t.Fatalf("count=%d first=%q", s.Len(), s.List()[0])
+	}
+	long := strings.Repeat("x", 70000)
+	s.Add(long)
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	loaded := history.NewWithPath(path)
+	if err := loaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	entries := loaded.List()
+	if len(entries) != 1000 || entries[len(entries)-1] != long {
+		t.Fatalf("loaded=%d last length=%d", len(entries), len(entries[len(entries)-1]))
+	}
+	copyOfEntries := loaded.List()
+	copyOfEntries[0] = "changed"
+	if loaded.List()[0] == "changed" {
+		t.Fatal("List exposes internal slice")
 	}
 }

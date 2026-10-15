@@ -102,3 +102,15 @@ func TestSet_TrimsWhitespace(t *testing.T) {
 		t.Fatalf("expected trimmed value, got %q", val)
 	}
 }
+
+func TestExpandPreservesQuotedWhitespace(t *testing.T) {
+	s := alias.New()
+	s.Set("say", "echo")
+	for _, line := range []string{`say "a  b"`, `say 'file  name'`, "say\t\"a\tb\""} {
+		got := s.Expand(line)
+		want := "echo" + line[len("say"):]
+		if got != want {
+			t.Fatalf("Expand(%q)=%q want=%q", line, got, want)
+		}
+	}
+}

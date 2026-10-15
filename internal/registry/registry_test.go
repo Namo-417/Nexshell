@@ -1,7 +1,11 @@
 package registry_test
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 
 	"nexshell/internal/registry"
@@ -11,10 +15,10 @@ import (
 
 type fakeAliasStore struct{ m map[string]string }
 
-func newFakeAliasStore() *fakeAliasStore        { return &fakeAliasStore{m: make(map[string]string)} }
-func (f *fakeAliasStore) Set(n, v string)       { f.m[n] = v }
+func newFakeAliasStore() *fakeAliasStore              { return &fakeAliasStore{m: make(map[string]string)} }
+func (f *fakeAliasStore) Set(n, v string)             { f.m[n] = v }
 func (f *fakeAliasStore) Get(n string) (string, bool) { v, ok := f.m[n]; return v, ok }
-func (f *fakeAliasStore) Delete(n string)       { delete(f.m, n) }
+func (f *fakeAliasStore) Delete(n string)             { delete(f.m, n) }
 func (f *fakeAliasStore) All() map[string]string {
 	out := make(map[string]string)
 	for k, v := range f.m {
@@ -114,5 +118,30 @@ func TestCommand_Run(t *testing.T) {
 	}
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("expected error 'boom', got %v", err)
+	}
+}
+
+func TestContext_DefaultStreamsAndCancellation(t *testing.T) {
+	ctx := registry.Context{}
+	if ctx.Input() != os.Stdin || ctx.Output() != os.Stdout || ctx.ErrorOutput() != os.Stderr {
+		t.Fatal("nil streams must preserve inherited process streams")
+	}
+	if ctx.Cancellation() == nil || ctx.Cancellation().Err() != nil {
+		t.Fatal("nil cancellation context must use an active background context")
+	}
+}
+
+func TestContext_ExplicitStreamsAndCancellation(t *testing.T) {
+	in := strings.NewReader("input")
+	var out, diagnostics bytes.Buffer
+	commandContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := registry.Context{Context: commandContext, Stdin: in, Stdout: &out, Stderr: &diagnostics}
+	if ctx.Input() != in || ctx.Output() != &out || ctx.ErrorOutput() != &diagnostics || ctx.Cancellation() != commandContext {
+		t.Fatal("explicit streams and context were not preserved")
+	}
+	cancel()
+	if !errors.Is(ctx.Cancellation().Err(), context.Canceled) {
+		t.Fatal("context cancellation was not preserved")
 	}
 }

@@ -27,7 +27,7 @@ const banner = `
 func main() {
 	// Print the welcome banner.
 	fmt.Print("\033[36m" + banner + "\033[0m")
-	fmt.Printf("  NexShell v0.1.0-phase1  •  %s/%s  •  type 'help' to get started\n\n",
+	fmt.Printf("  NexShell v0.2.0-phase2  •  %s/%s  •  type 'help' to get started\n\n",
 		runtime.GOOS, runtime.GOARCH)
 
 	// Build registry.
@@ -46,5 +46,5 @@ func main() {
 		fmt.Fprintf(os.Stderr, "nexshell: fatal: %v\n", err)
 		os.Exit(1)
 	}
-	shell.Run()
+	os.Exit(shell.Run())
 }

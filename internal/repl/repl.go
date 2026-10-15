@@ -1,133 +1,251 @@
-// Package repl implements the NexShell Read-Eval-Print Loop.
-// It reads lines from stdin, expands aliases, dispatches to built-in commands
-// via the registry, and falls back to the external executor for anything else.
+// Package repl implements NexShell's foreground command loop.
 package repl
 
 import (
-	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
-	"runtime"
+	"path/filepath"
 	"strings"
-	"syscall"
 
 	"nexshell/internal/alias"
 	"nexshell/internal/executor"
 	"nexshell/internal/history"
+	"nexshell/internal/parser"
 	"nexshell/internal/registry"
 )
 
-// Shell holds all shared state for a running shell session.
+// Shell holds the state of one foreground shell session.
 type Shell struct {
-	cwd      string
-	reg      *registry.Registry
-	aliases  *alias.Store
-	hist     *history.Store
+	cwd     string
+	reg     *registry.Registry
+	aliases *alias.Store
+	hist    *history.Store
 }
 
-// New creates a Shell wired up with the provided sub-systems.
 func New(reg *registry.Registry, aliases *alias.Store, hist *history.Store) (*Shell, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("repl: cannot get working directory: %w", err)
 	}
-	return &Shell{
-		cwd:     cwd,
-		reg:     reg,
-		aliases: aliases,
-		hist:    hist,
-	}, nil
+	return &Shell{cwd: cwd, reg: reg, aliases: aliases, hist: hist}, nil
 }
 
-// Run starts the REPL loop. It does not return until the user exits.
-func (s *Shell) Run() {
-	// Load persistent history.
-	if err := s.hist.Load(); err != nil {
-		fmt.Fprintf(os.Stderr, "nexshell: warning: could not load history: %v\n", err)
-	}
+// Run handles Ctrl+C, restores signal handling on return, and returns the shell
+// exit status. main owns os.Exit so deferred cleanup can finish first.
+func (s *Shell) Run() int {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	defer signal.Stop(signals)
+	return s.run(context.Background(), os.Stdin, os.Stdout, os.Stderr, signals)
+}
 
-	// Intercept Ctrl+C so the loop continues instead of exiting.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT)
-	go func() {
-		for range sigCh {
-			fmt.Print("\n")
-			s.printPrompt()
+// RunContext runs with caller-owned streams. Cancellation stops the session;
+// interactive interrupts in Run cancel only the active foreground pipeline.
+// A caller that supplies a blocking reader must unblock it when cancelling.
+func (s *Shell) RunContext(ctx context.Context, in io.Reader, out, errOut io.Writer) int {
+	return s.run(ctx, in, out, errOut, nil)
+}
+
+type lineResult struct {
+	line string
+	err  error
+}
+
+func (s *Shell) run(ctx context.Context, in io.Reader, out, errOut io.Writer, signals <-chan os.Signal) (status int) {
+	if err := s.hist.Load(); err != nil {
+		fmt.Fprintf(errOut, "nexshell: warning: could not load history: %v\n", err)
+	}
+	defer func() {
+		if err := s.hist.Save(); err != nil {
+			fmt.Fprintf(errOut, "nexshell: could not save history: %v\n", err)
+			if status == 0 {
+				status = 1
+			}
 		}
 	}()
-
-	scanner := bufio.NewScanner(os.Stdin)
 	for {
-		s.printPrompt()
-		if !scanner.Scan() {
-			// EOF (e.g. piped input finished or Ctrl+D).
-			fmt.Println()
-			break
+		if ctx.Err() != nil {
+			return 130
 		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		if err := s.printPrompt(out); err != nil {
+			fmt.Fprintf(errOut, "nexshell: prompt: %v\n", err)
+			return 1
+		}
+		// Read exactly one line. No buffered reader may consume bytes intended for
+		// a child process. The next read starts only after foreground execution ends.
+		lineCh := make(chan lineResult, 1)
+		go func() { line, err := readLine(in); lineCh <- lineResult{line, err} }()
+		var result lineResult
+	read:
+		for {
+			select {
+			case <-ctx.Done():
+				return 130
+			case <-signals:
+				status = 130
+				fmt.Fprintln(out)
+				if err := s.printPrompt(out); err != nil {
+					fmt.Fprintf(errOut, "nexshell: prompt: %v\n", err)
+					return 1
+				}
+			case result = <-lineCh:
+				break read
+			}
+		}
+		if result.err != nil && result.err != io.EOF {
+			if interruptedRead(result.err) {
+				status = 130
+				fmt.Fprintln(out)
+				continue
+			}
+			fmt.Fprintf(errOut, "nexshell: input: %v\n", result.err)
+			return 1
+		}
+		if result.line == "" && result.err == io.EOF {
+			fmt.Fprintln(out)
+			return status
+		}
+		line := result.line
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-
-		// Record in history before alias expansion.
 		s.hist.Add(line)
-
-		// Expand alias on the first token.
-		line = s.aliases.Expand(line)
-
-		// Tokenise.
-		name, args := tokenise(line)
-		if name == "" {
+		plan, err := parser.Parse(line)
+		if err == nil {
+			plan, err = s.expandAliases(plan)
+		}
+		if err != nil {
+			fmt.Fprintf(errOut, "nexshell: %v\n", err)
+			status = 2
 			continue
 		}
-
-		// Build the context that built-ins receive.
-		ctx := registry.Context{
-			CWD:      &s.cwd,
-			Aliases:  s.aliases,
-			History:  s.hist,
-			Registry: s.reg,
+		commandCtx, cancel := context.WithCancel(ctx)
+		shellCtx := registry.Context{CWD: &s.cwd, Aliases: s.aliases, History: s.hist, Registry: s.reg, Context: commandCtx, Stdin: in, Stdout: out, Stderr: errOut}
+		type completion struct {
+			status int
+			err    error
 		}
-
-		// Dispatch: built-in first, then external.
-		if cmd, ok := s.reg.Lookup(name); ok {
-			if err := cmd.Run(ctx, args); err != nil {
-				printError(err)
-			}
-		} else {
-			if err := executor.Run(name, args); err != nil {
-				printError(err)
+		completed := make(chan completion, 1)
+		go func() {
+			code, runErr := executor.Execute(commandCtx, plan, shellCtx)
+			completed <- completion{code, runErr}
+		}()
+		interrupted := false
+		var finished completion
+	foreground:
+		for {
+			select {
+			case <-ctx.Done():
+				cancel()
+				finished = <-completed
+				break foreground
+			case <-signals:
+				interrupted = true
+				cancel()
+			case finished = <-completed:
+				break foreground
 			}
 		}
+		cancel()
+		status = finished.status
+		if interrupted {
+			fmt.Fprintln(out)
+		}
+		var exit *registry.ExitError
+		if errors.As(finished.err, &exit) {
+			return exit.Code
+		}
+		// Executor has already routed execution diagnostics through stage stderr.
 	}
-
-	// Save history on clean exit.
-	_ = s.hist.Save()
 }
 
-// ─── prompt ──────────────────────────────────────────────────────────────────
+// readLine deliberately does not read ahead. It also supports long commands
+// without bufio.Scanner's 64 KiB limit. Input remains a single-line grammar.
+func readLine(in io.Reader) (string, error) {
+	var line strings.Builder
+	var b [1]byte
+	emptyReads := 0
+	for {
+		n, err := in.Read(b[:])
+		if n > 0 {
+			emptyReads = 0
+			if b[0] == '\n' {
+				return strings.TrimSuffix(line.String(), "\r"), nil
+			}
+			line.WriteByte(b[0])
+		} else if err == nil {
+			emptyReads++
+			if emptyReads >= 100 {
+				return line.String(), io.ErrNoProgress
+			}
+		}
+		if err != nil {
+			return line.String(), err
+		}
+	}
+}
+
+// Expand each original command once, preserving already-parsed arguments.
+// Alias values may contain a pipeline, but aliases are deliberately nonrecursive.
+func (s *Shell) expandAliases(plan parser.Plan) (parser.Plan, error) {
+	var expanded parser.Plan
+	for _, command := range plan.Commands {
+		value, ok := s.aliases.Get(command.Name)
+		if !ok {
+			expanded.Commands = append(expanded.Commands, command)
+			continue
+		}
+		aliasPlan, err := parser.Parse(value)
+		if err != nil {
+			return parser.Plan{}, fmt.Errorf("alias %q: %w", command.Name, err)
+		}
+		if len(aliasPlan.Commands) == 0 {
+			return parser.Plan{}, fmt.Errorf("alias %q: missing command", command.Name)
+		}
+		last := &aliasPlan.Commands[len(aliasPlan.Commands)-1]
+		last.Args = append(last.Args, command.Args...)
+		for _, redirect := range command.Redirections {
+			destination := last
+			if redirect.Kind == parser.Input {
+				destination = &aliasPlan.Commands[0]
+			}
+			for _, previous := range destination.Redirections {
+				if sameStream(previous.Kind, redirect.Kind) {
+					return parser.Plan{}, fmt.Errorf("alias %q: duplicate redirection", command.Name)
+				}
+			}
+			destination.Redirections = append(destination.Redirections, redirect)
+		}
+		expanded.Commands = append(expanded.Commands, aliasPlan.Commands...)
+	}
+	return expanded, parser.Validate(expanded)
+}
+
+func sameStream(a, b parser.Kind) bool {
+	if a == parser.Append {
+		a = parser.Output
+	}
+	if b == parser.Append {
+		b = parser.Output
+	}
+	return a == b
+}
 
 const (
 	ansiReset  = "\033[0m"
 	ansiBold   = "\033[1m"
 	ansiCyan   = "\033[36m"
-	ansiGreen  = "\033[32m"
 	ansiYellow = "\033[33m"
 )
 
-func (s *Shell) printPrompt() {
-	dir := abbreviateHome(s.cwd)
-	if runtime.GOOS == "windows" {
-		fmt.Printf("%snexshell%s %s%s%s ❯ ",
-			ansiCyan+ansiBold, ansiReset,
-			ansiYellow, dir, ansiReset)
-	} else {
-		fmt.Printf("%snexshell%s %s%s%s ❯ ",
-			ansiCyan+ansiBold, ansiReset,
-			ansiYellow, dir, ansiReset)
-	}
+func (s *Shell) printPrompt(out io.Writer) error {
+	_, err := fmt.Fprintf(out, "%snexshell%s %s%s%s ❯ ", ansiCyan+ansiBold, ansiReset, ansiYellow, abbreviateHome(s.cwd), ansiReset)
+	return err
 }
 
 func abbreviateHome(path string) string {
@@ -135,59 +253,12 @@ func abbreviateHome(path string) string {
 	if err != nil {
 		return path
 	}
-	if strings.HasPrefix(path, home) {
-		return "~" + path[len(home):]
+	rel, err := filepath.Rel(home, path)
+	if err == nil && rel == "." {
+		return "~"
+	}
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+		return "~" + string(filepath.Separator) + rel
 	}
 	return path
-}
-
-// ─── tokeniser ───────────────────────────────────────────────────────────────
-
-// tokenise splits a raw input line into (commandName, args).
-// It handles single-quoted and double-quoted groups as single tokens.
-func tokenise(line string) (string, []string) {
-	var tokens []string
-	var cur strings.Builder
-	inSingle := false
-	inDouble := false
-
-	for i := 0; i < len(line); i++ {
-		ch := line[i]
-		switch {
-		case ch == '\'' && !inDouble:
-			inSingle = !inSingle
-		case ch == '"' && !inSingle:
-			inDouble = !inDouble
-		case ch == ' ' && !inSingle && !inDouble:
-			if cur.Len() > 0 {
-				tokens = append(tokens, cur.String())
-				cur.Reset()
-			}
-		default:
-			cur.WriteByte(ch)
-		}
-	}
-	if cur.Len() > 0 {
-		tokens = append(tokens, cur.String())
-	}
-	if len(tokens) == 0 {
-		return "", nil
-	}
-	return tokens[0], tokens[1:]
-}
-
-// ─── error printing ──────────────────────────────────────────────────────────
-
-func printError(err error) {
-	var notFound *executor.NotFoundError
-	var execErr *executor.ExecError
-	switch {
-	case errors.As(err, &notFound):
-		fmt.Fprintf(os.Stderr, "%s%s%s\n", "\033[31m", err.Error(), ansiReset)
-	case errors.As(err, &execErr):
-		// Non-zero exit — already printed by the child's stderr; just show code.
-		fmt.Fprintf(os.Stderr, "%sexit status %d%s\n", "\033[33m", execErr.ExitCode, ansiReset)
-	default:
-		fmt.Fprintf(os.Stderr, "%s%s%s\n", "\033[31m", err.Error(), ansiReset)
-	}
 }

@@ -1,0 +1,65 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Go checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # Select the runner's 64-bit MinGW explicitly; other tools can add a
+      # 32-bit gcc to PATH. Go's Windows race runtime also needs MinGW-w64 8+.
+      - name: Select Windows race compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $compiler = 'C:\mingw64\bin\gcc.exe'
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            throw "Runner is missing its 64-bit MinGW compiler: $compiler"
+          }
+          $target = & $compiler -dumpmachine
+          if ($LASTEXITCODE -ne 0 -or $target -notmatch '^x86_64-') {
+            throw "Expected an x86_64 compiler; got: $target"
+          }
+          $synchronization = & $compiler --print-file-name libsynchronization.a
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $synchronization)) {
+            throw 'The compiler needs MinGW-w64 8+ for the Go race runtime.'
+          }
+          'C:\mingw64\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CC=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Toolchain
+        run: go version
+      - name: Tests with race detector
+        run: go test -race -count=1 -timeout=5m ./...
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Foreground terminal integration
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          go build -o "$RUNNER_TEMP/nexshell" ./cmd/nexshell
+          python3 scripts/verify-unix-terminal.py "$RUNNER_TEMP/nexshell"

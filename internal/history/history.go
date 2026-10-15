@@ -5,6 +5,7 @@ package history
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,15 +71,19 @@ func (s *Store) List() []string {
 }
 
 // Save writes history to disk, creating the file if necessary.
-func (s *Store) Save() error {
+func (s *Store) Save() (saveErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.Create(s.path)
+	f, err := os.OpenFile(s.path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("history save: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil && saveErr == nil {
+			saveErr = fmt.Errorf("history close: %w", err)
+		}
+	}()
 
 	w := bufio.NewWriter(f)
 	for _, e := range s.entries {
@@ -104,15 +109,22 @@ func (s *Store) Load() error {
 	defer f.Close()
 
 	var entries []string
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	reader := bufio.NewReader(f)
+	for {
+		text, readErr := reader.ReadString('\n')
+		line := strings.TrimSpace(text)
 		if line != "" {
 			entries = append(entries, line)
+			if len(entries) > s.maxSize {
+				entries = entries[len(entries)-s.maxSize:]
+			}
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return fmt.Errorf("history load: %w", err)
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return fmt.Errorf("history load: %w", readErr)
+		}
 	}
 	// Merge loaded entries before any entries added this session.
 	s.entries = append(entries, s.entries...)
