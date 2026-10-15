@@ -1,0 +1,29 @@
+version: "1"
+project: nexshell
+
+tasks:
+  build:
+    description: "Build the nexshell binary"
+    commands:
+      - go build -o nexshell.exe ./cmd/nexshell
+
+  test:
+    description: "Run all tests"
+    commands:
+      - go test -v -race ./...
+
+  lint:
+    description: "Run go vet"
+    commands:
+      - go vet ./...
+
+  clean:
+    description: "Remove build artifacts"
+    commands:
+      - rm -f nexshell.exe
+
+  dev:
+    description: "Build and run the shell"
+    depends: [build]
+    commands:
+      - ./nexshell.exe
