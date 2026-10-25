@@ -6,7 +6,7 @@ NexShell is a PowerShell-inspired shell written in Go. Phase 1 provides its inte
 
 ## Build and run
 
-Go 1.22 or newer is required. No third-party Go dependencies are used.
+The project uses Go 1.22 or newer and `gopkg.in/yaml.v3` for task configuration.
 
 ```sh
 go mod download
@@ -14,7 +14,13 @@ go build -o nexshell.exe ./cmd/nexshell
 ./nexshell.exe
 ```
 
-The `.exe` output name is retained from the original project; a Unix build can use `go build -o nexshell ./cmd/nexshell`. `nex.yaml` records build, test, lint, clean, and development commands; NexShell does not execute task files yet.
+The `.exe` output name is retained from the original project; a Unix build can use `go build -o nexshell ./cmd/nexshell`. `nex.yaml` defines build, test, lint, clean, and development tasks that can be executed through the Task Engine.
+
+## Task Automation
+
+NexShell supports Task Engine v1 through the `task <name>` command. Tasks are loaded from `nex.yaml` in the shell's current working directory, and each task command is parsed and executed sequentially through NexShell's existing parser and executor.
+
+The current `nex.yaml` provides `task build`, `task test`, and `task lint`. Task dependencies (`depends`) are loaded but are not executed yet. DAG scheduling, parallel task execution, and plugins are planned for later phases.
 
 ## Command syntax
 

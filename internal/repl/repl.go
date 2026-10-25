@@ -16,6 +16,7 @@ import (
 	"nexshell/internal/history"
 	"nexshell/internal/parser"
 	"nexshell/internal/registry"
+	"nexshell/internal/task"
 )
 
 // Shell holds the state of one foreground shell session.
@@ -31,6 +32,7 @@ func New(reg *registry.Registry, aliases *alias.Store, hist *history.Store) (*Sh
 	if err != nil {
 		return nil, fmt.Errorf("repl: cannot get working directory: %w", err)
 	}
+	task.SetExecute(executor.Execute)
 	return &Shell{cwd: cwd, reg: reg, aliases: aliases, hist: hist}, nil
 }
 
