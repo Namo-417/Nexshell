@@ -413,7 +413,7 @@ func TestEnvironmentWorkingDirectoryAndPATH(t *testing.T) {
 }
 
 func TestStatefulPipelineRejectionAndExit(t *testing.T) {
-	for _, name := range []string{"cd", "exit", "alias", "unalias"} {
+	for _, name := range []string{"cd", "exit", "alias", "unalias", "task"} {
 		status, err, _, diagnostics := runPlan(t, parser.Plan{Commands: []parser.Command{{Name: name}, {Name: "cat"}}}, t.TempDir(), nil)
 		if status != 2 || err == nil || !strings.Contains(diagnostics, "cannot run in a pipeline") {
 			t.Fatalf("%s: status=%d err=%v stderr=%q", name, status, err, diagnostics)

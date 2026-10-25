@@ -12,13 +12,16 @@ import (
 
 	"nexshell/internal/alias"
 	"nexshell/internal/builtins"
+	"nexshell/internal/executor"
 	"nexshell/internal/history"
 	"nexshell/internal/registry"
+	"nexshell/internal/task"
 )
 
 // buildContext builds a fully wired Context for built-in tests.
 func buildContext(t *testing.T) (registry.Context, *string) {
 	t.Helper()
+	task.SetExecute(executor.Execute)
 	reg := registry.New()
 	builtins.RegisterAll(reg)
 	a := alias.New()
@@ -205,8 +208,13 @@ func TestUnalias_NoArgs_Errors(t *testing.T) {
 
 func TestHelp_ListAll(t *testing.T) {
 	ctx, _ := buildContext(t)
+	var out bytes.Buffer
+	ctx.Stdout = &out
 	if err := runBuiltin(t, ctx, "help", nil); err != nil {
 		t.Fatalf("help failed: %v", err)
+	}
+	if !strings.Contains(out.String(), "task") {
+		t.Fatalf("help output missing task: %q", out.String())
 	}
 }
 
@@ -230,7 +238,7 @@ func TestHelp_UnknownCommand_Errors(t *testing.T) {
 func TestRegisterAll_AllCommandsPresent(t *testing.T) {
 	reg := registry.New()
 	builtins.RegisterAll(reg)
-	must := []string{"cd", "pwd", "ls", "cat", "echo", "clear", "exit", "help", "env", "history", "alias", "unalias"}
+	must := []string{"cd", "pwd", "ls", "cat", "echo", "clear", "exit", "help", "env", "history", "alias", "unalias", "task"}
 	for _, name := range must {
 		if _, ok := reg.Lookup(name); !ok {
 			t.Errorf("expected built-in %q to be registered", name)
@@ -434,7 +442,7 @@ func TestExit_ReturnsControlSignal(t *testing.T) {
 
 func TestBuiltins_PipelineSafety(t *testing.T) {
 	ctx, _ := buildContext(t)
-	unsafe := map[string]bool{"cd": true, "exit": true, "alias": true, "unalias": true}
+	unsafe := map[string]bool{"cd": true, "exit": true, "alias": true, "unalias": true, "task": true}
 	for _, cmd := range ctx.Registry.All() {
 		capability, ok := cmd.(registry.PipelineCommand)
 		if !ok || capability.PipelineSafe() == unsafe[cmd.Name()] {

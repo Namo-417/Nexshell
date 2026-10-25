@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"nexshell/internal/registry"
+	"nexshell/internal/task"
 )
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -457,4 +458,5 @@ func RegisterAll(reg *registry.Registry) {
 	reg.Register(&historyCmd{})
 	reg.Register(&aliasCmd{})
 	reg.Register(&unaliasCmd{})
+	reg.Register(&task.Command{})
 }
