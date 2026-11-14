@@ -125,9 +125,17 @@ func (m *Manager) List() []*Job {
 	var list []*Job
 	for _, j := range m.jobs {
 		j.mu.RLock()
-		copyJob := *j
+		list = append(list, &Job{
+			ID:        j.ID,
+			PID:       j.PID,
+			Command:   j.Command,
+			State:     j.State,
+			StartTime: j.StartTime,
+			Cancel:    j.Cancel,
+			WaitCh:    j.WaitCh,
+			ExitCode:  j.ExitCode,
+		})
 		j.mu.RUnlock()
-		list = append(list, &copyJob)
 	}
 	return list
 }
