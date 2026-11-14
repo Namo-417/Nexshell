@@ -27,6 +27,7 @@ const (
 
 // Job represents a tracked background execution task.
 type Job struct {
+	mu        sync.RWMutex
 	ID        int
 	PID       int
 	Command   string
@@ -35,6 +36,31 @@ type Job struct {
 	Cancel    context.CancelFunc
 	WaitCh    chan int
 	ExitCode  int
+}
+
+func (j *Job) GetState() JobState {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.State
+}
+
+func (j *Job) SetState(s JobState) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.State = s
+}
+
+func (j *Job) SetDone(exitCode int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.State = JobDone
+	j.ExitCode = exitCode
+}
+
+func (j *Job) SetPID(pid int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.PID = pid
 }
 
 // Manager coordinates background jobs in the shell.
@@ -84,10 +110,7 @@ func (m *Manager) Add(command string, pid int, cancel context.CancelFunc, waitCh
 	if waitCh != nil {
 		go func() {
 			exitCode := <-waitCh
-			m.mu.Lock()
-			job.State = JobDone
-			job.ExitCode = exitCode
-			m.mu.Unlock()
+			job.SetDone(exitCode)
 		}()
 	}
 
@@ -101,7 +124,10 @@ func (m *Manager) List() []*Job {
 
 	var list []*Job
 	for _, j := range m.jobs {
-		list = append(list, j)
+		j.mu.RLock()
+		copyJob := *j
+		j.mu.RUnlock()
+		list = append(list, &copyJob)
 	}
 	return list
 }
@@ -121,7 +147,10 @@ func (m *Manager) GetByPID(pid int) (*Job, bool) {
 	defer m.mu.Unlock()
 
 	for _, j := range m.jobs {
-		if j.PID == pid {
+		j.mu.RLock()
+		match := (j.PID == pid)
+		j.mu.RUnlock()
+		if match {
 			return j, true
 		}
 	}
@@ -203,7 +232,8 @@ func (c *FgCmd) Run(ctx registry.Context, args []string) error {
 		return fmt.Errorf("fg: job %d not found", id)
 	}
 
-	if job.State == JobDone || job.State == JobTerminated {
+	state := job.GetState()
+	if state == JobDone || state == JobTerminated {
 		c.mgr.Remove(id)
 		fmt.Fprintf(ctx.Output(), "[%d] %s (already finished)\n", job.ID, job.Command)
 		return nil
@@ -213,8 +243,7 @@ func (c *FgCmd) Run(ctx registry.Context, args []string) error {
 	if job.WaitCh != nil {
 		select {
 		case code := <-job.WaitCh:
-			job.State = JobDone
-			job.ExitCode = code
+			job.SetDone(code)
 			c.mgr.Remove(id)
 			if code != 0 {
 				return fmt.Errorf("job exited with code %d", code)
@@ -264,12 +293,12 @@ func (c *BgCmd) Run(ctx registry.Context, args []string) error {
 		return fmt.Errorf("bg: job %d not found", id)
 	}
 
-	if job.State == JobRunning {
+	if job.GetState() == JobRunning {
 		fmt.Fprintf(ctx.Output(), "job [%d] %s is already running\n", job.ID, job.Command)
 		return nil
 	}
 
-	job.State = JobRunning
+	job.SetState(JobRunning)
 	fmt.Fprintf(ctx.Output(), "[%d] %s resumed\n", job.ID, job.Command)
 	return nil
 }
@@ -323,7 +352,7 @@ func (c *KillCmd) Run(ctx registry.Context, args []string) error {
 				_ = p.Kill()
 			}
 		}
-		job.State = JobTerminated
+		job.SetState(JobTerminated)
 		fmt.Fprintf(ctx.Output(), "[%d] terminated\n", job.ID)
 		return nil
 	}
@@ -339,7 +368,7 @@ func (c *KillCmd) Run(ctx registry.Context, args []string) error {
 		if job.Cancel != nil {
 			job.Cancel()
 		}
-		job.State = JobTerminated
+		job.SetState(JobTerminated)
 	}
 
 	proc, err := os.FindProcess(pid)

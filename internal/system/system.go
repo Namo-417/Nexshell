@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -63,18 +64,25 @@ type AuditRecord struct {
 
 // AuditLogger manages persistent audit logging.
 type AuditLogger struct {
+	mu      sync.RWMutex
 	records []AuditRecord
 }
 
-var defaultLogger = &AuditLogger{}
+var (
+	defaultLogger = &AuditLogger{}
+	auditFileMu   sync.Mutex
+)
 
 func DefaultAuditLogger() *AuditLogger {
 	return defaultLogger
 }
 
 func (l *AuditLogger) Log(rec AuditRecord) {
+	l.mu.Lock()
 	l.records = append(l.records, rec)
-	// Write to .nexshell_audit.log file in background
+	l.mu.Unlock()
+
+	// Write to .nexshell_audit.log file in background safely
 	go func() {
 		entry := fmt.Sprintf("[%s] exit=%d dur=%s user=%s risk=%s cmd=%q\n",
 			rec.Timestamp.Format(time.RFC3339), rec.ExitCode, rec.Duration, rec.User, rec.RiskLevel, rec.Command)
@@ -83,6 +91,8 @@ func (l *AuditLogger) Log(rec AuditRecord) {
 }
 
 func appendAuditFile(line string) error {
+	auditFileMu.Lock()
+	defer auditFileMu.Unlock()
 	f, err := os.OpenFile(".nexshell_audit.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -93,10 +103,17 @@ func appendAuditFile(line string) error {
 }
 
 func (l *AuditLogger) Recent(n int) []AuditRecord {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	if n <= 0 || n > len(l.records) {
-		return l.records
+		out := make([]AuditRecord, len(l.records))
+		copy(out, l.records)
+		return out
 	}
-	return l.records[len(l.records)-n:]
+	start := len(l.records) - n
+	out := make([]AuditRecord, n)
+	copy(out, l.records[start:])
+	return out
 }
 
 // AuditCmd displays execution telemetry and audit history.

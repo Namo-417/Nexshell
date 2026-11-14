@@ -78,10 +78,15 @@ func TestJobsManager(t *testing.T) {
 
 	// Finish job
 	waitCh <- 0
-	time.Sleep(50 * time.Millisecond)
-
-	updated, ok := mgr.Get(1)
-	if !ok || updated.State != process.JobDone {
+	done := false
+	for start := time.Now(); time.Since(start) < 3*time.Second; time.Sleep(10 * time.Millisecond) {
+		if updated, ok := mgr.Get(1); ok && updated.GetState() == process.JobDone {
+			done = true
+			break
+		}
+	}
+	if !done {
+		updated, _ := mgr.Get(1)
 		t.Fatalf("expected job to be Done, got: %#v", updated)
 	}
 }

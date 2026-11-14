@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -214,6 +215,17 @@ func runTaskCommands(ctx registry.Context, name string, spec Task) error {
 	return nil
 }
 
+type synchronizedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (s synchronizedWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // RunDAG resolves task dependencies as a DAG, detects circular dependencies,
 // and executes them in topological order (concurrently if parallel is true).
 func RunDAG(ctx registry.Context, rootName string, parallel bool) error {
@@ -287,6 +299,11 @@ func RunDAG(ctx registry.Context, rootName string, parallel bool) error {
 
 	// Parallel execution: execute dependencies concurrently where possible
 	// Dependencies can run in parallel; root runs after dependencies finish.
+	var outputMu sync.Mutex
+	parallelCtx := ctx
+	parallelCtx.Stdout = synchronizedWriter{mu: &outputMu, w: ctx.Output()}
+	parallelCtx.Stderr = synchronizedWriter{mu: &outputMu, w: ctx.ErrorOutput()}
+
 	deps := make([]string, 0, len(order)-1)
 	for _, n := range order {
 		if n != rootName {
@@ -303,8 +320,8 @@ func RunDAG(ctx registry.Context, rootName string, parallel bool) error {
 			go func(name string) {
 				defer wg.Done()
 				spec, _ := cfg.Lookup(name)
-				fmt.Fprintf(ctx.Output(), "[task:parallel] Started %s\n", name)
-				if err := runTaskCommands(ctx, name, spec); err != nil {
+				fmt.Fprintf(parallelCtx.Output(), "[task:parallel] Started %s\n", name)
+				if err := runTaskCommands(parallelCtx, name, spec); err != nil {
 					errCh <- fmt.Errorf("parallel task %q failed: %w", name, err)
 				}
 			}(dName)
@@ -332,7 +349,7 @@ func RunDAG(ctx registry.Context, rootName string, parallel bool) error {
 					errCh <- fmt.Errorf("task %q: parse command %d: %w", rootName, cmdIdx+1, err)
 					return
 				}
-				_, execErr := executePlan(ctx.Cancellation(), plan, ctx)
+				_, execErr := executePlan(parallelCtx.Cancellation(), plan, parallelCtx)
 				if execErr != nil {
 					errCh <- fmt.Errorf("task %q: command failed", rootName)
 				}
@@ -346,5 +363,5 @@ func RunDAG(ctx registry.Context, rootName string, parallel bool) error {
 		return nil
 	}
 
-	return runTaskCommands(ctx, rootName, rootDirSpec)
+	return runTaskCommands(parallelCtx, rootName, rootDirSpec)
 }

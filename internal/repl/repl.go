@@ -143,19 +143,20 @@ func (s *Shell) run(ctx context.Context, in io.Reader, out, errOut io.Writer, si
 		if isBackground {
 			bgCtx, cancel := context.WithCancel(context.Background())
 			waitCh := make(chan int, 1)
-			jobPid := os.Getpid()
+			job := process.DefaultManager().Add(cmdLine, os.Getpid(), cancel, waitCh)
 			bgShellCtx := registry.Context{
-				CWD:            &s.cwd,
-				Aliases:        s.aliases,
-				History:        s.hist,
-				Registry:       s.reg,
-				Context:        bgCtx,
-				Stdin:          in,
-				Stdout:         out,
-				Stderr:         errOut,
-				OnProcessStart: func(pid int) { jobPid = pid },
+				CWD:      &s.cwd,
+				Aliases:  s.aliases,
+				History:  s.hist,
+				Registry: s.reg,
+				Context:  bgCtx,
+				Stdin:    in,
+				Stdout:   out,
+				Stderr:   errOut,
+				OnProcessStart: func(pid int) {
+					job.SetPID(pid)
+				},
 			}
-			job := process.DefaultManager().Add(cmdLine, jobPid, cancel, waitCh)
 			go func() {
 				code, _ := executor.Execute(bgCtx, plan, bgShellCtx)
 				waitCh <- code
