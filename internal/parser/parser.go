@@ -236,6 +236,10 @@ func Parse(input string) (Plan, error) {
 			command = Command{}
 			seen = make(map[Kind]bool)
 		default:
+			if command.Name == "where" && len(command.Args) == 1 && (token.Kind == RedirectOutput || token.Kind == RedirectInput) {
+				command.Args = append(command.Args, token.Value)
+				continue
+			}
 			kind := redirectionKind(token.Kind)
 			stream := kind
 			if kind == Append {

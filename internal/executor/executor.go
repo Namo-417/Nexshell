@@ -190,6 +190,9 @@ func Execute(ctx context.Context, plan parser.Plan, shell registry.Context) (sta
 			err = cmd.Start()
 			if err == nil {
 				started = append(started, cmd)
+				if shell.OnProcessStart != nil && cmd.Process != nil {
+					shell.OnProcessStart(cmd.Process.Pid)
+				}
 				err = processes.track(cmd)
 			}
 		}

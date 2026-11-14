@@ -442,7 +442,10 @@ func TestExit_ReturnsControlSignal(t *testing.T) {
 
 func TestBuiltins_PipelineSafety(t *testing.T) {
 	ctx, _ := buildContext(t)
-	unsafe := map[string]bool{"cd": true, "exit": true, "alias": true, "unalias": true, "task": true}
+	unsafe := map[string]bool{
+		"cd": true, "exit": true, "alias": true, "unalias": true, "task": true,
+		"ai": true, "bg": true, "explain": true, "fg": true, "kill": true,
+	}
 	for _, cmd := range ctx.Registry.All() {
 		capability, ok := cmd.(registry.PipelineCommand)
 		if !ok || capability.PipelineSafe() == unsafe[cmd.Name()] {

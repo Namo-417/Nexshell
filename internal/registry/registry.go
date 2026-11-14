@@ -30,6 +30,8 @@ type Context struct {
 	History HistoryStore
 	// Registry lets help and other meta-commands enumerate all commands.
 	Registry *Registry
+	// OnProcessStart is an optional callback invoked when an external process starts.
+	OnProcessStart func(pid int)
 }
 
 // Input returns the command's standard input, falling back to os.Stdin.

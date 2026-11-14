@@ -10,12 +10,16 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"nexshell/internal/ai"
 	"nexshell/internal/alias"
 	"nexshell/internal/executor"
 	"nexshell/internal/history"
 	"nexshell/internal/parser"
+	"nexshell/internal/process"
 	"nexshell/internal/registry"
+	"nexshell/internal/system"
 	"nexshell/internal/task"
 )
 
@@ -33,6 +37,7 @@ func New(reg *registry.Registry, aliases *alias.Store, hist *history.Store) (*Sh
 		return nil, fmt.Errorf("repl: cannot get working directory: %w", err)
 	}
 	task.SetExecute(executor.Execute)
+	ai.SetExecutor(executor.Execute)
 	return &Shell{cwd: cwd, reg: reg, aliases: aliases, hist: hist}, nil
 }
 
@@ -117,7 +122,15 @@ func (s *Shell) run(ctx context.Context, in io.Reader, out, errOut io.Writer, si
 			continue
 		}
 		s.hist.Add(line)
-		plan, err := parser.Parse(line)
+
+		isBackground := false
+		cmdLine := line
+		if strings.HasSuffix(trimmed, "&") && !strings.HasSuffix(trimmed, "&&") {
+			isBackground = true
+			cmdLine = strings.TrimSpace(strings.TrimSuffix(trimmed, "&"))
+		}
+
+		plan, err := parser.Parse(cmdLine)
 		if err == nil {
 			plan, err = s.expandAliases(plan)
 		}
@@ -126,7 +139,32 @@ func (s *Shell) run(ctx context.Context, in io.Reader, out, errOut io.Writer, si
 			status = 2
 			continue
 		}
+
+		if isBackground {
+			bgCtx, cancel := context.WithCancel(context.Background())
+			waitCh := make(chan int, 1)
+			jobPid := os.Getpid()
+			bgShellCtx := registry.Context{
+				CWD:            &s.cwd,
+				Aliases:        s.aliases,
+				History:        s.hist,
+				Registry:       s.reg,
+				Context:        bgCtx,
+				Stdin:          in,
+				Stdout:         out,
+				Stderr:         errOut,
+				OnProcessStart: func(pid int) { jobPid = pid },
+			}
+			job := process.DefaultManager().Add(cmdLine, jobPid, cancel, waitCh)
+			go func() {
+				code, _ := executor.Execute(bgCtx, plan, bgShellCtx)
+				waitCh <- code
+			}()
+			fmt.Fprintf(out, "[%d] %d\n", job.ID, job.PID)
+			continue
+		}
 		commandCtx, cancel := context.WithCancel(ctx)
+		cmdStartTime := time.Now()
 		shellCtx := registry.Context{CWD: &s.cwd, Aliases: s.aliases, History: s.hist, Registry: s.reg, Context: commandCtx, Stdin: in, Stdout: out, Stderr: errOut}
 		type completion struct {
 			status int
@@ -155,6 +193,15 @@ func (s *Shell) run(ctx context.Context, in io.Reader, out, errOut io.Writer, si
 		}
 		cancel()
 		status = finished.status
+		system.DefaultAuditLogger().Log(system.AuditRecord{
+			Timestamp: cmdStartTime,
+			User:      os.Getenv("USERNAME"),
+			CWD:       s.cwd,
+			Command:   line,
+			Duration:  time.Since(cmdStartTime),
+			ExitCode:  status,
+			RiskLevel: string(ai.AnalyzeRisk(line).Level),
+		})
 		if interrupted {
 			fmt.Fprintln(out)
 		}

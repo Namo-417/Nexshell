@@ -16,7 +16,14 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"nexshell/internal/ai"
+	"nexshell/internal/httpcmd"
+	"nexshell/internal/pipeline"
+	"nexshell/internal/plugin"
+	"nexshell/internal/process"
+	"nexshell/internal/project"
 	"nexshell/internal/registry"
+	"nexshell/internal/system"
 	"nexshell/internal/task"
 )
 
@@ -446,6 +453,7 @@ func colorize(s, code string) string {
 
 // RegisterAll registers every built-in command with reg.
 func RegisterAll(reg *registry.Registry) {
+	// Member 1: Core built-ins
 	reg.Register(&cdCmd{})
 	reg.Register(&pwdCmd{})
 	reg.Register(&lsCmd{})
@@ -458,5 +466,28 @@ func RegisterAll(reg *registry.Registry) {
 	reg.Register(&historyCmd{})
 	reg.Register(&aliasCmd{})
 	reg.Register(&unaliasCmd{})
+
+	// Member 3: OS / Process Engine & Structured Pipelines
+	reg.Register(&process.ProcessesCmd{})
+	reg.Register(process.NewJobsCmd(nil))
+	reg.Register(process.NewFgCmd(nil))
+	reg.Register(process.NewBgCmd(nil))
+	reg.Register(process.NewKillCmd(nil))
+	reg.Register(&pipeline.WhereCmd{})
+	reg.Register(&pipeline.SelectCmd{})
+	reg.Register(&pipeline.SortCmd{})
+	reg.Register(&pipeline.JSONCmd{})
+
+	// Member 4: Automation & Plugins
 	reg.Register(&task.Command{})
+	reg.Register(&project.ProjectCmd{})
+	reg.Register(httpcmd.NewHTTPCmd())
+	reg.Register(plugin.NewPluginsCmd(nil))
+
+	// Member 5: AI, Security & Observability
+	reg.Register(&ai.ExplainCmd{})
+	reg.Register(&ai.AICmd{})
+	reg.Register(&system.SystemCmd{})
+	reg.Register(system.NewAuditCmd(nil))
+	reg.Register(&system.BenchmarksCmd{})
 }

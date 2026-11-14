@@ -1,3 +1,6 @@
 # Local verification toolchains and generated test artifacts.
 .tools/
 .verification/
+
+.nexshell_audit.log
+*.log

@@ -2,7 +2,50 @@
 
 > A structured, AI-assisted developer & automation shell.
 
-NexShell is a PowerShell-inspired shell written in Go. Phase 1 provides its interactive foundation; Phase 2 adds a foreground command execution engine with parsed pipelines and file redirection. AI assistance, plugins, task execution, and background jobs remain roadmap items.
+NexShell is a PowerShell-inspired shell written in Go combining OS-level process management, structured pipelines, automation DAGs, extensible plugins, and safety-aware AI assistance.
+
+## Features
+
+- **Member 1 (Core Shell & UX):** Interactive REPL, prompt, signal handling, history persistence (`~/.nexshell_history`), command aliasing (`alias`, `unalias`), and core built-ins (`cd`, `pwd`, `ls`, `cat`, `echo`, `clear`, `exit`, `help`, `env`).
+- **Member 2 (Parser & Pipeline):** Custom lexer and AST parser, pipeline streaming (`|`), standard input/output/append/stderr redirections (`<`, `>`, `>>`, `2>`).
+- **Member 3 (OS Process Engine & Structured Pipelines):**
+  - **Job Control:** Trailing `&` background execution, `jobs` list, `fg` (foreground), `bg` (resume), `kill` (terminate process/job).
+  - **Process Inspection:** Cross-platform `processes` command reporting PID, PPID, name, CPU%, memory (MB), and status.
+  - **Structured Pipelines:** Typed record exchange with `where` (filtering), `select` (projection), `sort` (sorting), and `json` (formatting).
+- **Member 4 (Automation & Plugins):**
+  - **Task Automation DAG:** `nex.yaml` loader with DAG dependency resolution, circular dependency detection, and parallel execution (`task <name> --parallel`).
+  - **Project Detection:** `project` command inspecting Go, Node, Python, Rust ecosystems, Git branch/status/commit, and test configurations.
+  - **HTTP API Client:** `http [GET|POST|PUT|DELETE] <url>` with structured JSON pipeline output.
+  - **Plugin Protocol:** Plugin discovery (`./plugins`), plugin execution, and built-in VCS/container helpers (`git`, `docker`).
+- **Member 5 (AI, Security & Observability):**
+  - **AI Assistant:** `explain` (troubleshooting with diagnostic suggestions) and `ai` (natural language to shell commands).
+  - **Risk Analysis & Safety Gate:** Static risk scoring (Low, Medium, High, Critical) with confirmation prompts before executing destructive commands.
+  - **System Observability:** `system` (CPU, memory, uptime, Go runtime metrics), `audit` (telemetry execution logs recorded in `.nexshell_audit.log`).
+  - **Benchmarks:** `benchmarks` command evaluating startup time, pipeline throughput, process launch overhead, and concurrency.
+
+## Signature Demo Workflows
+
+1. **Project Detection:**
+   ```sh
+   nex> project
+   ```
+2. **Parallel Task Execution:**
+   ```sh
+   nex> task test --parallel
+   ```
+3. **Structured Process Pipeline:**
+   ```sh
+   nex> processes | where cpu > 50 | select pid,name,cpu
+   nex> processes | where cpu > 10 | select pid,name,cpu | json
+   ```
+4. **HTTP API Request:**
+   ```sh
+   nex> http GET http://localhost:8080/health
+   ```
+5. **AI-Assisted Troubleshooting:**
+   ```sh
+   nex> explain "why is my server failing to bind?"
+   ```
 
 ## Build and run
 
