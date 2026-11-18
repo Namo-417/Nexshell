@@ -25,6 +25,16 @@ const (
 	JobTerminated JobState = "Terminated"
 )
 
+// JobSnapshot is a lock-free copy of a Job's fields, returned by List().
+type JobSnapshot struct {
+	ID        int
+	PID       int
+	Command   string
+	State     JobState
+	StartTime time.Time
+	ExitCode  int
+}
+
 // Job represents a tracked background execution task.
 type Job struct {
 	mu        sync.RWMutex
@@ -118,21 +128,19 @@ func (m *Manager) Add(command string, pid int, cancel context.CancelFunc, waitCh
 }
 
 // List returns a snapshot of all tracked jobs.
-func (m *Manager) List() []*Job {
+func (m *Manager) List() []JobSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var list []*Job
+	var list []JobSnapshot
 	for _, j := range m.jobs {
 		j.mu.RLock()
-		list = append(list, &Job{
+		list = append(list, JobSnapshot{
 			ID:        j.ID,
 			PID:       j.PID,
 			Command:   j.Command,
 			State:     j.State,
 			StartTime: j.StartTime,
-			Cancel:    j.Cancel,
-			WaitCh:    j.WaitCh,
 			ExitCode:  j.ExitCode,
 		})
 		j.mu.RUnlock()
